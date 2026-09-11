@@ -31,33 +31,40 @@ doppler · recall of 'dense' over 300 queries
   estimand    relevance recall, from captures carrying relevance marks
   estimator   chapman · 2 sources
 
-  recall      0.50   [0.47, 0.54]   95% interval over resampled queries
-  population  3,216 estimated · 2,170 observed · 1,621 found by dense
+  recall      0.52   [0.50, 0.55]   95% interval over resampled queries
+  population  3,168 estimated · 2,177 observed · 1,661 found by dense
 
   by stratum
-    s2    100 queries   recall 0.42   442 of 1,054
-    s1    100 queries   recall 0.49   518 of 1,055
-    s0    100 queries   recall 0.60   661 of 1,107
+    s2    100 queries   recall 0.41   428 of 1,047
+    s1    100 queries   recall 0.54   560 of 1,028
+    s0    100 queries   recall 0.62   673 of 1,093
 
   missed set
-    dense missed an estimated 1,595 documents
-    bm25 already found 549 of them (34% of the missed set)
-    s0: 196 missed, such as q0000-d003, q0000-d005, q0000-d008
+    dense missed an estimated 1,507 documents
+    bm25 already found 516 of them (34% of the missed set)
+    s0: 192 missed, such as q0000-d010, q0003-d003, q0003-d004
+    s2: 163 missed, such as q0005-d001, q0005-d002, q0005-d009
+    s1: 161 missed, such as q0007-d001, q0007-d002, q0007-d007
 
   recall against rank cutoff
-    k=1    ▁▁▁▁▁▁▁▁  0.09
-    k=2    ▂▂▂▂▂▂▂▂  0.18
-    k=3    ▄▄▄▄▄▄▄▄  0.27
-    k=5    ▆▆▆▆▆▆▆▆  0.41
-    k=10   ████████  0.50
+    k=1    ▁▁▁▁▁▁▁▁  0.07
+    k=2    ▂▂▂▂▂▂▂▂  0.13
+    k=3    ▃▃▃▃▃▃▃▃  0.19
+    k=5    ▄▄▄▄▄▄▄▄  0.29
+    k=10   ▇▇▇▇▇▇▇▇  0.46
+    k=20   ████████  0.52
+    k=23   ████████  0.52
 
   notes
+    - The interval covers sampling variation in the query sample. It does not cover
+      estimator bias from unequal catchability, which is the larger error wherever it is
+      present; the accuracy table in the README gives its measured size and direction.
     - Dependence between two sources cannot be identified from two sources. If they tend
       to find the same documents for reasons other than relevance, the population is
       underestimated and this recall is an upper bound. Add a third, differently built
       source to identify it.
 
-  true recall of 'dense' in this simulated trace: 0.45
+  true recall of 'dense' in this simulated trace: 0.46
 ```
 
 That output is `doppler-recall --demo --target dense`, which runs on a simulated trace whose true recall is known, so the last line shows how close the estimate landed.
@@ -112,23 +119,23 @@ The size of that effect is measured rather than described. `examples/accuracy.py
 
 | Unequal catchability | True recall | Estimated | Error | 95% interval covered truth |
 | --- | --- | --- | --- | --- |
-| none | 0.45 | 0.45 | 0.00 | 100% |
-| 0.3 | 0.46 | 0.47 | +0.01 | 80% |
-| 0.6 | 0.45 | 0.50 | +0.05 | 20% |
-| 1.0 | 0.46 | 0.58 | +0.12 | 0% |
-| 1.6 | 0.47 | 0.67 | +0.21 | 0% |
+| none | 0.45 | 0.45 | +0.01 | 100% |
+| 0.3 | 0.45 | 0.47 | +0.02 | 80% |
+| 0.6 | 0.46 | 0.52 | +0.07 | 0% |
+| 1.0 | 0.46 | 0.57 | +0.12 | 0% |
+| 1.6 | 0.46 | 0.67 | +0.20 | 0% |
 
 With a third retriever in the sample, the estimator switches to Chao's method, which tolerates unequal catchability:
 
 | Unequal catchability | True recall | Estimated | Error | 95% interval covered truth |
 | --- | --- | --- | --- | --- |
-| none | 0.45 | 0.41 | -0.05 | 0% |
-| 0.3 | 0.45 | 0.42 | -0.03 | 20% |
+| none | 0.45 | 0.40 | -0.04 | 0% |
+| 0.3 | 0.45 | 0.42 | -0.03 | 40% |
 | 0.6 | 0.46 | 0.45 | -0.01 | 80% |
-| 1.0 | 0.46 | 0.49 | +0.03 | 20% |
-| 1.6 | 0.46 | 0.56 | +0.10 | 0% |
+| 1.0 | 0.46 | 0.49 | +0.02 | 80% |
+| 1.6 | 0.47 | 0.56 | +0.09 | 0% |
 
-Read those tables as the operating range. Two retrievers give a good number when catchability is fairly even and an upper bound when it is not. Three retrievers built on different principles hold the number much closer across the range, which is the reason the report asks for a third source. In every case the direction of the error is known, so a low estimate is always real news.
+Read those tables as the operating range. Two retrievers give a good number when catchability is fairly even and an upper bound when it is not, and that error has one direction, so a low estimate from two retrievers is always real news. Three retrievers built on different principles hold the number much closer across the range, which is the reason the report asks for a third source, and there the error changes sign: the estimate reads about 0.05 low when catchability is even and about 0.10 high at the far end, so read the row rather than a single rule.
 
 ## When Doppler refuses
 
@@ -139,7 +146,7 @@ A capture-recapture estimate fails quietly. Two retrievers that return nearly th
 | `too_few_queries` | fewer than 30 queries | sample more queries |
 | `insufficient_recapture` | fewer than 10 documents found by more than one source | retrieve deeper, or sample more queries |
 | `sources_too_similar` | pooled Jaccard overlap at or above 0.8 | compare retrievers built on different principles |
-| `no_captures` | nothing was returned at all | check the logs being fed in |
+| `no_captures` | every list was present and empty | check the logs being fed in |
 
 ```
 doppler · no estimate for 'dense'
@@ -149,6 +156,19 @@ doppler · no estimate for 'dense'
               the limit of 0.80). Near-identical sources make the missed set look empty.
               Compare sources built on different principles, such as a dense retriever
               against a lexical one.
+
+  queries     60
+  observed    660 documents · 540 captured more than once
+  overlap     dense vs bm25: Jaccard 0.82
+
+  notes
+    - The interval covers sampling variation in the query sample. It does not cover
+      estimator bias from unequal catchability, which is the larger error wherever it is
+      present; the accuracy table in the README gives its measured size and direction.
+    - Dependence between two sources cannot be identified from two sources. If they tend
+      to find the same documents for reasons other than relevance, the population is
+      underestimated and this recall is an upper bound. Add a third, differently built
+      source to identify it.
 ```
 
 The thresholds are arguments, so you can lower them deliberately and read the result knowing what you loosened:
@@ -191,7 +211,7 @@ Doppler takes query logs and two or more retrievers and returns a recall interva
 ## Development
 
 ```
-uv venv && uv pip install -e ".[dev]" pytest
+uv venv && uv pip install -e ".[dev]"
 .venv/bin/python -m pytest
 ruff check . && ruff format --check .
 ```

@@ -85,3 +85,18 @@ def test_overlap_is_pooled_over_queries():
     overlap = report.diagnostics.max_overlap
     assert overlap.sources == ("dense", "bm25")
     assert overlap.jaccard == pytest.approx(1 / 3)
+
+
+def test_every_report_says_the_interval_does_not_cover_estimator_bias():
+    report = estimate_recall(trace(60, ["a", "b"], ["a", "c"]), "dense")
+    assert any("does not cover estimator bias" in note for note in report.diagnostics.notes)
+
+
+def test_a_stratum_too_small_to_resample_is_named():
+    captures = trace(60, ["a", "b"], ["a", "c"], stratum="main")
+    captures.append(Capture("lonely", "dense", ["z1", "z2"], stratum="lonely"))
+    captures.append(Capture("lonely", "bm25", ["z1", "z3"], stratum="lonely"))
+    report = estimate_recall(captures, "dense", resamples=50)
+    note = next(note for note in report.diagnostics.notes if "fewer than 5 queries" in note)
+    assert "lonely" in note
+    assert "adds no spread" in note

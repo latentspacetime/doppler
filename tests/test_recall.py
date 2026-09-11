@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from doppler import Estimator, estimate_recall, simulate_captures
+from doppler import Capture, Estimator, estimate_recall, simulate_captures
 from doppler.recall import Refusal
 
 RATES = {"dense": 0.55, "bm25": 0.40}
@@ -101,3 +101,25 @@ def test_a_refusal_serialises_to_json_with_its_reason():
     payload = json.loads(json.dumps(report.to_dict()))
     assert payload["verdict"] == "refused"
     assert payload["reason"] == "too_few_queries"
+
+
+def test_chapman_is_refused_before_any_work_when_there_are_three_sources():
+    rates = {**RATES, "splade": 0.45}
+    simulation = simulate_captures(rates, queries=40, relevant_per_query=12)
+    with pytest.raises(ValueError, match="takes exactly two sources"):
+        estimate_recall(simulation.captures, "dense", estimator=Estimator.CHAPMAN)
+
+
+def test_a_stratum_where_nothing_was_retrieved_reports_zero_rather_than_dividing_by_zero():
+    captures = []
+    for index in range(60):
+        captures.append(Capture(f"r{index}", "dense", [f"a{index}", f"b{index}"], stratum="rich"))
+        captures.append(Capture(f"r{index}", "bm25", [f"a{index}", f"c{index}"], stratum="rich"))
+    for index in range(10):
+        captures.append(Capture(f"e{index}", "dense", [], stratum="empty"))
+        captures.append(Capture(f"e{index}", "bm25", [], stratum="empty"))
+    report = estimate_recall(captures, "dense", resamples=50)
+    empty = next(item for item in report.strata if item.stratum == "empty")
+    assert empty.population == 0
+    assert empty.recall == 0.0
+    assert report.recall > 0

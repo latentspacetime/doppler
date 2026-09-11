@@ -51,3 +51,18 @@ def test_estimated_missed_is_the_population_the_target_did_not_capture():
     )
     report = estimate_recall(simulation.captures, "dense", resamples=100)
     assert report.repairs.estimated_missed == pytest.approx(report.population - report.captured)
+
+
+def test_the_depth_sweep_stops_at_the_depth_the_estimate_was_made_at():
+    """A sweep past the analysed depth divides captures taken at one cutoff by a
+    population estimated at another, which reported recall far above 1."""
+    captures = []
+    for index in range(40):
+        deep = [f"d{index}-{rank}" for rank in range(100)]
+        captures.append(Capture(f"q{index}", "dense", deep))
+        captures.append(Capture(f"q{index}", "bm25", [f"b{index}", f"d{index}-0", f"d{index}-1"]))
+    report = estimate_recall(captures, "dense", depth=2, resamples=50)
+    sweep = report.repairs.depth_sweep
+    assert sweep[-1].depth == 2
+    assert all(point.recall <= 1.0 for point in sweep)
+    assert sweep[-1].recall == pytest.approx(report.recall, abs=1e-9)

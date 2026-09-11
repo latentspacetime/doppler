@@ -56,6 +56,10 @@ class Capture:
     relevant_doc_ids: frozenset[str] | None = None
     stratum: str = DEFAULT_STRATUM
 
+    # The hand-written __init__ replaces the generated one so that identifiers are
+    # checked and lists are normalised before the instance exists. dataclass leaves
+    # an __init__ defined in the class body alone; do not remove this one expecting
+    # the generated signature to reappear unchanged.
     def __init__(
         self,
         query_id: str,
@@ -64,8 +68,12 @@ class Capture:
         relevant_doc_ids: Iterable[str] | None = None,
         stratum: str = DEFAULT_STRATUM,
     ) -> None:
-        ranked = tuple(dict.fromkeys(doc_ids))
-        marked = None if relevant_doc_ids is None else frozenset(relevant_doc_ids)
+        ranked = tuple(dict.fromkeys(_require_document_ids(doc_ids, "doc_ids")))
+        marked = (
+            None
+            if relevant_doc_ids is None
+            else frozenset(_require_document_ids(relevant_doc_ids, "relevant_doc_ids"))
+        )
         _require_text(query_id, "query_id")
         _require_text(source, "source")
         _require_text(stratum, "stratum")
@@ -191,3 +199,41 @@ def build_sample(captures: Sequence[Capture]) -> Sample:
 def _require_text(value: str, field_name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string, got {value!r}")
+    _reject_control_characters(value, field_name)
+
+
+def _reject_control_characters(value: str, field_name: str) -> None:
+    """Identifiers come from logs and are printed to a terminal verbatim.
+
+    An escape sequence in a document id would recolour or reposition the
+    operator's terminal, so control characters are rejected where they enter
+    rather than stripped where they are printed.
+    """
+    if any(character.isprintable() is False and character != " " for character in value):
+        raise ValueError(f"{field_name} must not contain control characters, got {value!r}")
+
+
+def _require_document_ids(value: object, field_name: str) -> list[str]:
+    """Check that document identifiers arrived as a list of non-empty strings.
+
+    A bare string is the dangerous case and is rejected by name: iterating it
+    yields one document per character, which turns a single logging mistake
+    into a corpus of invented documents and a recall number computed over them.
+    """
+    if isinstance(value, (str, bytes)):
+        raise ValueError(
+            f"{field_name} must be a list of document ids, got the string {value!r}; "
+            f"a single id goes in a list, as [{value!r}]"
+        )
+    try:
+        ids = list(value)  # type: ignore[call-overload]
+    except TypeError as error:
+        raise ValueError(f"{field_name} must be a list of document ids, got {value!r}") from error
+    for document in ids:
+        if not isinstance(document, str) or not document.strip():
+            raise ValueError(
+                f"{field_name} must hold non-empty strings, got {document!r} "
+                f"of type {type(document).__name__}"
+            )
+        _reject_control_characters(document, field_name)
+    return ids

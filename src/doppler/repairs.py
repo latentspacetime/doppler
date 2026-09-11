@@ -90,16 +90,17 @@ def price(
     """Price each way of recovering what the target missed.
 
     Args:
-        population: Estimated population size for the sampled queries.
+        population: Estimated population size at the analysed depth.
         captured: Documents the target captured at the analysed depth.
         depth: Rank cutoff the estimate used, or None for the full lists.
-        max_depth: Longest list in the sample, which bounds the depth sweep.
+        max_depth: Longest list in the sample.
     """
     missed = max(population - captured, 0.0)
+    ceiling = max_depth if depth is None else min(depth, max_depth)
     return Repairs(
         estimated_missed=missed,
         recoveries=_recoveries(queries, sources, target, missed, depth),
-        depth_sweep=_depth_sweep(queries, sources, target, population, max_depth),
+        depth_sweep=_depth_sweep(queries, sources, target, population, ceiling),
         missed_by_stratum=_missed_by_stratum(queries, sources, target, depth),
     )
 
@@ -132,22 +133,25 @@ def _depth_sweep(
     sources: Sequence[str],
     target: str,
     population: float,
-    max_depth: int,
+    ceiling: int,
 ) -> tuple[DepthPoint, ...]:
     """Recall against a fixed population as the target's list is cut shorter.
 
-    The denominator is the population estimated from the full lists, so the
-    curve shows what raising the cutoff actually buys. A curve that has already
-    flattened is the evidence that raising it buys nothing.
+    The denominator is the population estimated at the analysed depth, so the
+    ladder stops at that same depth. Sweeping past it would divide captures
+    taken at one cutoff by a population estimated at another and report a
+    recall above 1. A curve that has already flattened is the evidence that
+    raising the cutoff buys nothing.
     """
-    if not population or max_depth <= 0:
+    if not population or ceiling <= 0:
         return ()
-    ladder = [step for step in DEPTH_LADDER if step < max_depth]
-    ladder.append(max_depth)
+    ladder = [step for step in DEPTH_LADDER if step < ceiling]
+    ladder.append(ceiling)
+    index = list(sources).index(target)
     return tuple(
         DepthPoint(
             depth=step,
-            recall=tabulate(queries, sources, step).per_source[target] / population,
+            recall=tabulate(queries, sources, step).captured[index] / population,
         )
         for step in ladder
     )

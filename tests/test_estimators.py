@@ -8,9 +8,16 @@ from doppler.estimators import (
     bootstrap_interval,
     default_estimator,
     estimate,
+    group_by_stratum,
+    pool,
     population,
+    summarise,
     tabulate,
 )
+
+
+def grouped_of(sample, depth=None):
+    return group_by_stratum(sample.queries, sample.sources, depth)
 
 
 def varied_sample(count=40):
@@ -77,12 +84,22 @@ def test_tabulate_counts_capture_frequencies_per_query():
     assert table.observed == 5
     assert table.doubletons == 1
     assert table.singletons == 4
-    assert table.per_source == {"dense": 3, "bm25": 3}
+    assert table.per_source(sample.sources) == {"dense": 3, "bm25": 3}
+
+
+def test_a_pool_of_summaries_equals_the_table_of_the_whole_group():
+    sample = sample_of(
+        ("q1", {"dense": ["a", "b"], "bm25": ["a", "c"]}),
+        ("q2", {"dense": ["d"], "bm25": ["e"]}),
+    )
+    summaries = [summarise(query, sample.sources) for query in sample.queries]
+    assert all(summary.queries == 1 for summary in summaries)
+    assert pool(summaries, 2) == tabulate(sample.queries, sample.sources)
 
 
 def test_tabulate_respects_the_rank_cutoff():
     sample = sample_of(("q1", {"dense": ["a", "b", "c"], "bm25": ["a"]}))
-    assert tabulate(sample.queries, sample.sources, depth=1).per_source["dense"] == 1
+    assert tabulate(sample.queries, sample.sources, depth=1).captured[0] == 1
 
 
 def test_documents_shared_across_queries_are_counted_once_per_query():
@@ -101,7 +118,7 @@ def test_strata_are_estimated_separately_then_summed():
         captures.append(Capture(f"hard{index}", "dense", ["c"], stratum="hard"))
         captures.append(Capture(f"hard{index}", "bm25", ["d"], stratum="hard"))
     sample = build_sample(captures)
-    point = estimate(sample.queries, sample.sources, "dense", Estimator.CHAPMAN)
+    point = estimate(grouped_of(sample), 0, Estimator.CHAPMAN, 2)
     by_name = {item.stratum: item for item in point.strata}
     assert by_name["easy"].recall > by_name["hard"].recall
     assert point.population == pytest.approx(
@@ -109,38 +126,26 @@ def test_strata_are_estimated_separately_then_summed():
     )
 
 
-def test_estimate_rejects_a_target_that_is_not_a_source():
-    sample = sample_of(("q1", {"dense": ["a"], "bm25": ["a"]}))
-    with pytest.raises(ValueError, match="not one of the sources"):
-        estimate(sample.queries, sample.sources, "splade", Estimator.CHAPMAN)
-
-
 def test_the_interval_is_reproducible_from_its_seed():
     sample = varied_sample()
-    first = bootstrap_interval(sample.queries, sample.sources, "dense", Estimator.CHAPMAN, seed=7)
-    second = bootstrap_interval(sample.queries, sample.sources, "dense", Estimator.CHAPMAN, seed=7)
-    other = bootstrap_interval(sample.queries, sample.sources, "dense", Estimator.CHAPMAN, seed=8)
+    first = bootstrap_interval(grouped_of(sample), 0, Estimator.CHAPMAN, 2, seed=7)
+    second = bootstrap_interval(grouped_of(sample), 0, Estimator.CHAPMAN, 2, seed=7)
+    other = bootstrap_interval(grouped_of(sample), 0, Estimator.CHAPMAN, 2, seed=8)
     assert first == second
     assert first != other
 
 
 def test_a_wider_confidence_gives_a_wider_interval():
     sample = varied_sample()
-    narrow = bootstrap_interval(
-        sample.queries, sample.sources, "dense", Estimator.CHAPMAN, confidence=0.5
-    )
-    wide = bootstrap_interval(
-        sample.queries, sample.sources, "dense", Estimator.CHAPMAN, confidence=0.99
-    )
+    narrow = bootstrap_interval(grouped_of(sample), 0, Estimator.CHAPMAN, 2, confidence=0.5)
+    wide = bootstrap_interval(grouped_of(sample), 0, Estimator.CHAPMAN, 2, confidence=0.99)
     assert wide[1] - wide[0] >= narrow[1] - narrow[0]
 
 
 def test_a_confidence_outside_zero_and_one_is_rejected():
     sample = sample_of(("q1", {"dense": ["a"], "bm25": ["a"]}))
     with pytest.raises(ValueError, match="confidence must lie"):
-        bootstrap_interval(
-            sample.queries, sample.sources, "dense", Estimator.CHAPMAN, confidence=1.0
-        )
+        bootstrap_interval(grouped_of(sample), 0, Estimator.CHAPMAN, 2, confidence=1.0)
 
 
 def test_percentile_interpolates_between_neighbours():

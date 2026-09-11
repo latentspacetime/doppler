@@ -95,3 +95,41 @@ def test_one_source_cannot_recapture_itself():
 def test_no_captures_at_all_is_rejected():
     with pytest.raises(ValueError, match="no captures given"):
         build_sample([])
+
+
+def test_a_bare_string_of_doc_ids_is_rejected_rather_than_split_into_characters():
+    """Iterating a string yields one document per character, which invents a corpus."""
+    with pytest.raises(ValueError, match=r"got the string 'd12'"):
+        Capture("q1", "dense", "d12")
+
+
+def test_document_ids_that_are_not_strings_are_rejected():
+    with pytest.raises(ValueError, match="must hold non-empty strings"):
+        Capture("q1", "dense", [1, 2, 3])
+
+
+def test_an_empty_document_id_is_rejected():
+    with pytest.raises(ValueError, match="must hold non-empty strings"):
+        Capture("q1", "dense", ["a", ""])
+
+
+def test_relevance_marks_are_checked_the_same_way():
+    with pytest.raises(ValueError, match=r"relevant_doc_ids must be a list"):
+        Capture("q1", "dense", ["a"], relevant_doc_ids="a")
+
+
+def test_doc_ids_that_are_not_a_sequence_at_all_are_rejected():
+    with pytest.raises(ValueError, match="must be a list of document ids"):
+        Capture("q1", "dense", 5)
+
+
+def test_control_characters_in_an_identifier_are_rejected():
+    """Document ids come from logs and are printed to a terminal verbatim."""
+    with pytest.raises(ValueError, match="must not contain control characters"):
+        Capture("q1", "dense", ["a\x1b[31mred"])
+    with pytest.raises(ValueError, match="must not contain control characters"):
+        Capture("q1", "dense\x07", ["a"])
+
+
+def test_ordinary_punctuation_and_spaces_in_an_id_are_kept():
+    assert Capture("q1", "dense", ["doc 12", "a-b_c.d"]).doc_ids == ("doc 12", "a-b_c.d")

@@ -10,7 +10,11 @@ from __future__ import annotations
 from .captures import Estimand
 from .recall import RecallEstimate, Refusal, Report
 
-_BLOCKS = " ▁▂▃▄▅▆▇█"
+_BLOCKS = "▁▂▃▄▅▆▇█"
+BAR_WIDTH = 8
+STRATA_IN_MISSED_SET = 5
+EXAMPLES_IN_LINE = 3
+STRATUM_COLUMN = 24
 
 _ESTIMAND_GLOSS = {
     Estimand.RELEVANT: "relevance recall, from captures carrying relevance marks",
@@ -44,10 +48,10 @@ def _render_estimate(report: RecallEstimate) -> str:
 
     if len(report.strata) > 1:
         lines.append("  by stratum")
-        width = max(len(item.stratum) for item in report.strata)
+        width = min(max(len(item.stratum) for item in report.strata), STRATUM_COLUMN)
         for item in sorted(report.strata, key=lambda entry: entry.recall):
             lines.append(
-                f"    {item.stratum:<{width}}  {item.queries:>5} queries   "
+                f"    {_fit(item.stratum, width):<{width}}  {item.queries:>5} queries   "
                 f"recall {item.recall:.2f}   "
                 f"{item.captured:,} of {item.population:,.0f}"
             )
@@ -64,11 +68,12 @@ def _render_estimate(report: RecallEstimate) -> str:
                 f"    {recovery.source} already found {recovery.recovered:,} of them "
                 f"({recovery.share_of_missed:.0%} of the missed set)"
             )
-    for group in repairs.missed_by_stratum[:5]:
+    for group in repairs.missed_by_stratum[:STRATA_IN_MISSED_SET]:
         if group.missed:
+            examples = ", ".join(group.examples[:EXAMPLES_IN_LINE])
             lines.append(
-                f"    {group.stratum}: {group.missed:,} missed"
-                + (f", such as {', '.join(group.examples[:3])}" if group.examples else "")
+                f"    {_fit(group.stratum, STRATUM_COLUMN)}: {group.missed:,} missed"
+                + (f", such as {examples}" if examples else "")
             )
     lines.append("")
 
@@ -113,6 +118,11 @@ def _render_notes(report: Report) -> list[str]:
     for note in report.diagnostics.notes:
         lines.append(f"    - {_wrap(note, indent=6)}")
     return lines
+
+
+def _fit(text: str, width: int) -> str:
+    """Cut a name to the column, keeping the end where names usually differ."""
+    return text if len(text) <= width else "..." + text[-(width - 3) :]
 
 
 def _wrap(text: str, indent: int, width: int = 88) -> str:

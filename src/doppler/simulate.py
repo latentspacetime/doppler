@@ -18,6 +18,11 @@ from dataclasses import dataclass
 from .captures import Capture
 
 DISTRACTORS_PER_QUERY = 20
+RANK_NOISE = 0.8
+"""Spread of the ranking signal, in the same units as catchability."""
+
+DISTRACTOR_PENALTY = 1.0
+"""How much less relevant a distractor looks to the ranker than a relevant document."""
 
 
 @dataclass(frozen=True)
@@ -54,9 +59,10 @@ def simulate_captures(
             obscure ones by none, which both biases the population downwards
             and correlates the sources.
         strata: Number of query groups, each with its own capture rates.
-        mark_relevance: Whether captures carry relevance marks. When False the
-            lists also carry distractors and the estimand becomes pool
-            coverage.
+        mark_relevance: Whether captures carry relevance marks. Every list
+            carries distractors either way; marking them makes the population
+            the relevant set, and leaving them unmarked makes it the whole
+            retrievable pool.
         seed: Seed, so a simulation is reproducible.
 
     Raises:
@@ -85,32 +91,34 @@ def simulate_captures(
         # strata exist to absorb: some query types are simply harder.
         stratum_shift = (index % strata) * -0.4
         relevant = [f"{query_id}-d{doc:03d}" for doc in range(relevant_per_query)]
-        distractors = (
-            []
-            if mark_relevance
-            else [f"{query_id}-x{noise:03d}" for noise in range(DISTRACTORS_PER_QUERY)]
-        )
-        # Unmarked captures make every returned document part of the captured
-        # population, so the distractors join the truth being recovered.
-        prominence = {doc: rng.gauss(0, 1) for doc in relevant + distractors}
-        population += len(relevant) + len(distractors)
+        distractors = [f"{query_id}-x{noise:03d}" for noise in range(DISTRACTORS_PER_QUERY)]
+        # Prominence does double duty: it drives catchability when heterogeneity is
+        # above zero, and it always drives rank order, so a simulated retriever puts
+        # its better documents first the way a real one does. Distractors are
+        # retrievable and rank lower, which is what makes a rank cutoff cost anything.
+        prominence = {doc: rng.gauss(0, 1) for doc in relevant}
+        prominence.update({doc: rng.gauss(-DISTRACTOR_PENALTY, 1) for doc in distractors})
+        # Marked captures name the relevant documents, so the population is the
+        # relevant set. Unmarked captures make every retrievable document part of it.
+        population += len(relevant) if mark_relevance else len(relevant) + len(distractors)
 
         for source, rate in rates.items():
             base = _logit(rate) + stratum_shift
             scored = [
-                (doc, rng.random())
+                (doc, prominence[doc] + rng.gauss(0, RANK_NOISE))
                 for doc in relevant + distractors
                 if rng.random() < _expit(base + heterogeneity * prominence[doc])
             ]
-            found[source].update(doc for doc, _ in scored)
             scored.sort(key=lambda item: -item[1])
             ranked = [doc for doc, _ in scored]
+            marks = set(ranked) & set(relevant)
+            found[source].update(marks if mark_relevance else ranked)
             captures.append(
                 Capture(
                     query_id=query_id,
                     source=source,
                     doc_ids=ranked,
-                    relevant_doc_ids=set(ranked) & set(relevant) if mark_relevance else None,
+                    relevant_doc_ids=marks if mark_relevance else None,
                     stratum=stratum,
                 )
             )

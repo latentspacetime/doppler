@@ -2,19 +2,26 @@
 
 Two sources retrieving for the same query are two attempts to capture the same
 unknown population. What each source caught, and how much the catches overlap,
-is enough to estimate how large the population was -- including the part that
+is enough to estimate how large the population was, including the part that
 neither source ever returned.
+
+Each query is summarised once into a `CaptureTable` of plain counts. Everything
+after that, including a thousand bootstrap resamples, adds those counts instead
+of walking the document sets again.
 """
 
 from __future__ import annotations
 
 import random
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
 from .captures import QueryCaptures
+
+DEFAULT_CONFIDENCE = 0.95
+DEFAULT_RESAMPLES = 1000
 
 
 class Estimator(str, Enum):
@@ -22,14 +29,17 @@ class Estimator(str, Enum):
 
     CHAPMAN = "chapman"
     """Bias-corrected Lincoln-Petersen. Two sources only. Assumes every
-    document is equally catchable; positive dependence between the sources
-    makes it a lower bound on the population, and so an upper bound on
-    recall."""
+    document is equally catchable. Measured against known populations, it
+    underestimates the population as catchability grows uneven, so recall
+    reads high and the error has one direction."""
 
     CHAO = "chao"
-    """Chao's bias-corrected lower bound from capture frequencies. Works for
-    any number of sources and tolerates unequal catchability, at the cost of
-    estimating a lower bound rather than a point."""
+    """Chao's bias-corrected estimator from capture frequencies. Works for any
+    number of sources and tolerates unequal catchability. Measured against
+    known populations, it overestimates the population when catchability is
+    even and underestimates it when catchability is strongly uneven, so its
+    error changes sign across that range. See the accuracy table in the
+    README for the measured amounts."""
 
 
 def default_estimator(source_count: int) -> Estimator:
@@ -39,20 +49,21 @@ def default_estimator(source_count: int) -> Estimator:
 
 @dataclass(frozen=True)
 class CaptureTable:
-    """Capture counts pooled over a set of queries.
+    """Capture counts for one query, or for a pool of queries.
 
     Attributes:
-        queries: How many queries were pooled.
+        queries: How many queries these counts cover.
         observed: Documents captured by at least one source, summed per query.
         frequency: ``frequency[j - 1]`` is the number of captured documents
             that exactly ``j`` sources returned.
-        per_source: Documents captured, by source.
+        captured: Documents captured, in the order of the sources the table was
+            built from.
     """
 
     queries: int
     observed: int
     frequency: tuple[int, ...]
-    per_source: dict[str, int]
+    captured: tuple[int, ...]
 
     @property
     def singletons(self) -> int:
@@ -62,33 +73,74 @@ class CaptureTable:
     def doubletons(self) -> int:
         return self.frequency[1] if len(self.frequency) > 1 else 0
 
+    def per_source(self, sources: Sequence[str]) -> dict[str, int]:
+        return dict(zip(sources, self.captured, strict=True))
+
+
+def summarise(
+    query: QueryCaptures, sources: Sequence[str], depth: int | None = None
+) -> CaptureTable:
+    """Reduce one query to the counts every estimator needs."""
+    marked = query.marked(depth)
+    seen = Counter[str]()
+    captured = []
+    for source in sources:
+        documents = marked.get(source, frozenset())
+        captured.append(len(documents))
+        seen.update(documents)
+    frequency = [0] * len(sources)
+    for times in seen.values():
+        frequency[times - 1] += 1
+    return CaptureTable(
+        queries=1,
+        observed=len(seen),
+        frequency=tuple(frequency),
+        captured=tuple(captured),
+    )
+
+
+def pool(tables: Sequence[CaptureTable], width: int) -> CaptureTable:
+    """Add up per-query tables into one.
+
+    Pooling assumes the pooled queries have similar capture rates, which is
+    what strata are for: pool within a stratum, not across dissimilar ones.
+    """
+    queries = observed = 0
+    frequency = [0] * width
+    captured = [0] * width
+    for table in tables:
+        queries += table.queries
+        observed += table.observed
+        for index in range(width):
+            frequency[index] += table.frequency[index]
+            captured[index] += table.captured[index]
+    return CaptureTable(
+        queries=queries,
+        observed=observed,
+        frequency=tuple(frequency),
+        captured=tuple(captured),
+    )
+
 
 def tabulate(
     queries: Sequence[QueryCaptures],
     sources: Sequence[str],
     depth: int | None = None,
 ) -> CaptureTable:
-    """Pool per-query capture counts into one table.
+    """Summarise every query and pool the result."""
+    return pool([summarise(query, sources, depth) for query in queries], len(sources))
 
-    Pooling assumes queries in the pool have similar capture rates, which is
-    what strata are for: pool within a stratum, not across dissimilar ones.
-    """
-    observed = 0
-    frequency = Counter[int]()
-    per_source = dict.fromkeys(sources, 0)
+
+def group_by_stratum(
+    queries: Sequence[QueryCaptures],
+    sources: Sequence[str],
+    depth: int | None = None,
+) -> dict[str, list[CaptureTable]]:
+    """Summarise every query once, kept in its stratum."""
+    grouped: dict[str, list[CaptureTable]] = {}
     for query in queries:
-        marked = query.marked(depth)
-        seen = Counter[str]()
-        for source in sources:
-            captured = marked.get(source, frozenset())
-            per_source[source] += len(captured)
-            seen.update(captured)
-        observed += len(seen)
-        frequency.update(seen.values())
-    counts = tuple(frequency.get(j, 0) for j in range(1, len(sources) + 1))
-    return CaptureTable(
-        queries=len(queries), observed=observed, frequency=counts, per_source=per_source
-    )
+        grouped.setdefault(query.stratum, []).append(summarise(query, sources, depth))
+    return grouped
 
 
 def population(table: CaptureTable, estimator: Estimator) -> float:
@@ -97,34 +149,26 @@ def population(table: CaptureTable, estimator: Estimator) -> float:
     The result is never below the number actually observed.
     """
     if estimator is Estimator.CHAPMAN:
-        if len(table.per_source) != 2:
+        if len(table.captured) != 2:
             raise ValueError(
-                f"the Chapman estimator takes exactly two sources, got {len(table.per_source)}"
+                f"the Chapman estimator takes exactly two sources, got {len(table.captured)}"
             )
-        first, second = table.per_source.values()
+        first, second = table.captured
         estimate = _chapman(first, second, table.doubletons)
     else:
         estimate = _chao(table.observed, table.singletons, table.doubletons)
     return max(estimate, float(table.observed))
 
 
-def _chapman(first: int, second: int, both: int) -> float:
-    """Chapman's bias correction of ``n1 * n2 / m``, which is defined at ``m = 0``."""
-    return (first + 1) * (second + 1) / (both + 1) - 1
-
-
-def _chao(observed: int, singletons: int, doubletons: int) -> float:
-    """Chao's bias-corrected lower bound on population size."""
-    return observed + singletons * (singletons - 1) / (2 * (doubletons + 1))
-
-
 def stratum_population(
-    queries: Sequence[QueryCaptures],
-    sources: Sequence[str],
-    estimator: Estimator,
-    depth: int | None = None,
+    tables: Sequence[CaptureTable], pooled: CaptureTable, estimator: Estimator
 ) -> float:
-    """Estimate the population of a group of queries, aggregated as the estimator requires.
+    """Estimate the population of one stratum, aggregated as the estimator requires.
+
+    Args:
+        tables: One summary per query in the stratum.
+        pooled: Those summaries already added together, which the caller has.
+        estimator: Which estimator's aggregation rule to follow.
 
     The two estimators aggregate differently, and swapping the rules breaks
     them. Chapman is a ratio of capture counts, so pooling a stratum's queries
@@ -135,8 +179,18 @@ def stratum_population(
     query and summed instead.
     """
     if estimator is Estimator.CHAPMAN:
-        return population(tabulate(queries, sources, depth), estimator)
-    return sum(population(tabulate([query], sources, depth), estimator) for query in queries)
+        return population(pooled, estimator)
+    return sum(population(table, estimator) for table in tables)
+
+
+def _chapman(first: int, second: int, both: int) -> float:
+    """Chapman's bias correction of ``n1 * n2 / m``, which is defined at ``m = 0``."""
+    return (first + 1) * (second + 1) / (both + 1) - 1
+
+
+def _chao(observed: int, singletons: int, doubletons: int) -> float:
+    """Chao's bias-corrected estimator of population size."""
+    return observed + singletons * (singletons - 1) / (2 * (doubletons + 1))
 
 
 @dataclass(frozen=True)
@@ -166,58 +220,48 @@ class RecallPoint:
 
 
 def estimate(
-    queries: Sequence[QueryCaptures],
-    sources: Sequence[str],
-    target: str,
+    grouped: Mapping[str, Sequence[CaptureTable]],
+    target_index: int,
     estimator: Estimator,
-    depth: int | None = None,
+    width: int,
 ) -> RecallPoint:
-    """Estimate what fraction of the population ``target`` captured.
+    """Estimate what fraction of the population the target source captured.
 
     Each stratum is estimated on its own and the strata are then summed, so a
     stratum whose queries are easy to retrieve for cannot carry a stratum whose
     queries are not.
     """
-    if target not in sources:
-        raise ValueError(f"target {target!r} is not one of the sources {list(sources)}")
-
-    by_stratum: dict[str, list[QueryCaptures]] = {}
-    for query in queries:
-        by_stratum.setdefault(query.stratum, []).append(query)
-
     estimates = []
-    for stratum, group in by_stratum.items():
-        table = tabulate(group, sources, depth)
+    for stratum, tables in grouped.items():
+        pooled = pool(tables, width)
         estimates.append(
             StratumEstimate(
                 stratum=stratum,
-                queries=table.queries,
-                observed=table.observed,
-                captured=table.per_source[target],
-                population=stratum_population(group, sources, estimator, depth),
+                queries=pooled.queries,
+                observed=pooled.observed,
+                captured=pooled.captured[target_index],
+                population=stratum_population(tables, pooled, estimator),
             )
         )
 
     total_population = sum(item.population for item in estimates)
     total_captured = sum(item.captured for item in estimates)
-    total_observed = sum(item.observed for item in estimates)
     return RecallPoint(
         recall=total_captured / total_population if total_population else 0.0,
         population=total_population,
         captured=total_captured,
-        observed=total_observed,
+        observed=sum(item.observed for item in estimates),
         strata=tuple(estimates),
     )
 
 
 def bootstrap_interval(
-    queries: Sequence[QueryCaptures],
-    sources: Sequence[str],
-    target: str,
+    grouped: Mapping[str, Sequence[CaptureTable]],
+    target_index: int,
     estimator: Estimator,
-    depth: int | None = None,
-    confidence: float = 0.95,
-    resamples: int = 1000,
+    width: int,
+    confidence: float = DEFAULT_CONFIDENCE,
+    resamples: int = DEFAULT_RESAMPLES,
     seed: int = 0,
 ) -> tuple[float, float]:
     """A percentile interval for recall, resampling whole queries.
@@ -232,17 +276,13 @@ def bootstrap_interval(
     if resamples < 1:
         raise ValueError(f"resamples must be positive, got {resamples}")
 
-    by_stratum: dict[str, list[QueryCaptures]] = {}
-    for query in queries:
-        by_stratum.setdefault(query.stratum, []).append(query)
-
     rng = random.Random(seed)
     draws = []
     for _ in range(resamples):
-        resampled: list[QueryCaptures] = []
-        for group in by_stratum.values():
-            resampled.extend(rng.choices(group, k=len(group)))
-        draws.append(estimate(resampled, sources, target, estimator, depth).recall)
+        resampled = {
+            stratum: rng.choices(tables, k=len(tables)) for stratum, tables in grouped.items()
+        }
+        draws.append(estimate(resampled, target_index, estimator, width).recall)
 
     draws.sort()
     tail = (1 - confidence) / 2

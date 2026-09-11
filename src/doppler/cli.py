@@ -14,14 +14,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from . import __version__
 from .captures import DEFAULT_STRATUM, Capture
 from .diagnostics import Thresholds
-from .estimators import Estimator
-from .recall import DEFAULT_CONFIDENCE, DEFAULT_RESAMPLES, Refusal, estimate_recall
+from .estimators import DEFAULT_CONFIDENCE, DEFAULT_RESAMPLES, Estimator
+from .recall import Refusal, estimate_recall
 from .simulate import Simulation, simulate_captures
 
 REFUSED = 2
@@ -122,19 +122,29 @@ def _load(args: argparse.Namespace) -> tuple[list[Capture], Simulation | None]:
         return list(simulation.captures), simulation
     if not args.captures:
         raise ValueError("no captures given; pass a JSON Lines file, - for stdin, or --demo")
-    text = sys.stdin.read() if args.captures == "-" else Path(args.captures).read_text()
-    return parse_jsonl(text), None
+    if args.captures == "-":
+        return parse_jsonl(sys.stdin), None
+    # Read a line at a time: the format is line delimited, and a production
+    # query log is large enough that holding the whole file is worth avoiding.
+    with Path(args.captures).open(encoding="utf-8") as lines:
+        return parse_jsonl(lines), None
 
 
-def parse_jsonl(text: str) -> list[Capture]:
-    """Parse capture records, naming the line that is wrong when one is.
+def parse_jsonl(lines: Iterable[str]) -> list[Capture]:
+    """Parse capture records from lines, naming the line that is wrong when one is.
+
+    Args:
+        lines: An open file, standard input, or any iterable of lines. A single
+            string is rejected, because iterating one yields characters.
 
     Raises:
         ValueError: On malformed JSON, a missing field, or a field of the wrong
             type. Line numbers are 1-based so they match an editor.
     """
+    if isinstance(lines, str):
+        raise ValueError("parse_jsonl takes lines; pass text.splitlines() or an open file")
     captures = []
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:

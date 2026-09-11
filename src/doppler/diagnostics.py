@@ -9,13 +9,20 @@ a refusal rather than a number with a caveat attached.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from itertools import combinations
+from types import MappingProxyType
 
 from .captures import QueryCaptures
 from .estimators import CaptureTable
+
+MIN_STRATUM_QUERIES = 5
+"""Below this, a stratum adds almost no spread to the resampled interval."""
+
+NAMED_THIN_STRATA = 3
+"""How many thin strata to name in the note before counting the rest."""
 
 
 class RefusalReason(str, Enum):
@@ -67,7 +74,7 @@ class Diagnostics:
     observed: int
     recaptured: int
     capture_frequency: tuple[int, ...]
-    per_source: dict[str, int]
+    per_source: Mapping[str, int]
     overlaps: tuple[PairOverlap, ...]
     dependence_identifiable: bool
     notes: tuple[str, ...] = field(default_factory=tuple)
@@ -102,13 +109,30 @@ def measure(
     """Measure sample health, including the dependence the estimator assumes away."""
     recaptured = sum(table.frequency[1:])
     identifiable = len(sources) >= 3
-    notes = []
+    notes = [
+        "The interval covers sampling variation in the query sample. It does not cover "
+        "estimator bias from unequal catchability, which is the larger error wherever it "
+        "is present; the accuracy table in the README gives its measured size and "
+        "direction."
+    ]
     if not identifiable:
         notes.append(
             "Dependence between two sources cannot be identified from two sources. "
             "If they tend to find the same documents for reasons other than "
             "relevance, the population is underestimated and this recall is an "
             "upper bound. Add a third, differently built source to identify it."
+        )
+    thin = [
+        stratum for stratum, count in _stratum_sizes(queries).items() if count < MIN_STRATUM_QUERIES
+    ]
+    if thin:
+        named = ", ".join(thin[:NAMED_THIN_STRATA])
+        rest = len(thin) - NAMED_THIN_STRATA
+        notes.append(
+            f"{len(thin)} strata hold fewer than {MIN_STRATUM_QUERIES} queries "
+            f"({named}{f', and {rest} more' if rest > 0 else ''}). A stratum is resampled "
+            "to its own size, so a stratum of one query resamples to itself every time and "
+            "adds no spread, which leaves the interval narrower than the sample supports."
         )
     if excluded_queries:
         notes.append(
@@ -122,7 +146,7 @@ def measure(
         observed=table.observed,
         recaptured=recaptured,
         capture_frequency=table.frequency,
-        per_source=dict(table.per_source),
+        per_source=MappingProxyType(table.per_source(sources)),
         overlaps=_overlaps(queries, sources, depth),
         dependence_identifiable=identifiable,
         notes=tuple(notes),
@@ -162,6 +186,13 @@ def refuse(diagnostics: Diagnostics, thresholds: Thresholds) -> tuple[RefusalRea
             "a dense retriever against a lexical one.",
         )
     return None
+
+
+def _stratum_sizes(queries: Sequence[QueryCaptures]) -> dict[str, int]:
+    sizes: dict[str, int] = {}
+    for query in queries:
+        sizes[query.stratum] = sizes.get(query.stratum, 0) + 1
+    return sizes
 
 
 def _overlaps(

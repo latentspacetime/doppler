@@ -9,17 +9,17 @@ from typing import Literal
 from .captures import Capture, Estimand, build_sample
 from .diagnostics import Diagnostics, RefusalReason, Thresholds, measure, refuse
 from .estimators import (
+    DEFAULT_CONFIDENCE,
+    DEFAULT_RESAMPLES,
     Estimator,
     StratumEstimate,
     bootstrap_interval,
     default_estimator,
     estimate,
-    tabulate,
+    group_by_stratum,
+    pool,
 )
 from .repairs import Repairs, price
-
-DEFAULT_CONFIDENCE = 0.95
-DEFAULT_RESAMPLES = 1000
 
 
 @dataclass(frozen=True)
@@ -163,7 +163,16 @@ def estimate_recall(
         raise ValueError(f"depth must be at least 1, got {depth}")
 
     chosen = estimator or default_estimator(len(sample.sources))
-    table = tabulate(sample.queries, sample.sources, depth)
+    if chosen is Estimator.CHAPMAN and len(sample.sources) != 2:
+        raise ValueError(
+            f"the Chapman estimator takes exactly two sources, got {len(sample.sources)}; "
+            "use Estimator.CHAO above two"
+        )
+    width = len(sample.sources)
+    # Every query is summarised once here; the point estimate and each of the
+    # thousand resamples add those summaries rather than re-reading the sets.
+    grouped = group_by_stratum(sample.queries, sample.sources, depth)
+    table = pool([summary for tables in grouped.values() for summary in tables], width)
     diagnostics = measure(
         sample.queries, sample.sources, table, len(sample.excluded_query_ids), depth
     )
@@ -180,13 +189,13 @@ def estimate_recall(
             diagnostics=diagnostics,
         )
 
-    point = estimate(sample.queries, sample.sources, target, chosen, depth)
+    target_index = sample.sources.index(target)
+    point = estimate(grouped, target_index, chosen, width)
     interval = bootstrap_interval(
-        sample.queries,
-        sample.sources,
-        target,
+        grouped,
+        target_index,
         chosen,
-        depth=depth,
+        width,
         confidence=confidence,
         resamples=resamples,
         seed=seed,
