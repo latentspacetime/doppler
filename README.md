@@ -2,7 +2,7 @@
 
 2026-09-10 20:19 PST
 
-## Intent
+## INTENT
 
 Doppler is a Python library that estimates how much of the document set a search system returned. You run two search systems, called retrievers, on the same queries and count how many documents they both found. From that overlap the library estimates the size of the full set, then reports the fraction returned by the retriever you named, along with a range showing how far off that figure could be. This document covers install, a demo on a simulated log, the contents of the report, how to feed your own logs from Python or from a JSON Lines file, the two quantities the library can measure, which are relevance recall, meaning the share of documents that should have come back, and pool coverage, meaning the share of everything these retrievers together could return, measured accuracy when some documents are easier to find than others, the four cases where the library returns a refusal naming the problem with the sample, how to pick the second retriever, how to group queries into batches of similar queries called strata, the estimator arguments, related methods, and how to run the tests. License is MIT.
 
